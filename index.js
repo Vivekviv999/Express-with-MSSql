@@ -1,38 +1,14 @@
-const express= require("express");
-const books = require('./data/books');
+const express = require("express");
 const { connectToDatabase, sql } = require("./dbconfig");
+const axios = require("axios");
 
-//initialization 
-const app = express()
+// Initialization
+const app = express();
+app.use(express.json());
 
-//application will use json format data only
-app.use(express.json())
+const port = 8081;
 
-//const list= ["today ","gonna ","have ","awesome ","party"]
-
-const port= 8081;
-// app.get('/add', (req, res) => {
-//     const { num1, num2 } = req.body;
-
-//     if (!num1 || !num2) {
-//         return res.status(400).json({ error: 'Please provide num1 and num2 as query parameters' });
-//     }
-
-//     const sum = parseInt(num1) + parseInt(num2);
-//      res.status(200).json({ result: sum });
-// });
-//    app.get('/', (req,res) =>{
-//     res.status(200).send(list)
-//    });
-
-//    app.post('/list', (req, res) =>{
-//      let newlist=req.body.item;
-//      list.push(newlist);
-//       res.status(200).send({message:"the list is updated successfully "})
-
-//    })
-
-    // Initialize database connection
+// Initialize database connection
 let pool;
 (async () => {
   try {
@@ -42,7 +18,8 @@ let pool;
   }
 })();
 
-  app.get("/books", async (req, res) => {
+// Existing endpoints
+app.get("/books", async (req, res) => {
   try {
     const result = await pool.request().query("SELECT * FROM Books"); // Replace 'Books' with your table name
     res.status(200).json(result.recordset);
@@ -51,11 +28,12 @@ let pool;
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-  app.post("/update-book", async (req, res) => {
+
+app.post("/update-book", async (req, res) => {
   const { id, name, author, genre, price, publisher } = req.body;
-     
-    //price validation 
-    if (typeof price !== "number" || price <= 0) {
+
+  // Price validation
+  if (typeof price !== "number" || price <= 0) {
     return res.status(400).json({ error: "Invalid price: Only positive numbers are allowed" });
   }
 
@@ -83,10 +61,68 @@ let pool;
   }
 });
 
-   
+// New endpoint: /getAdditionalBookData
+app.post("/getFirstPublishedYear", async (req, res) => {
+  const { title } = req.body;
 
+  // Validate input
+  if (!title) {
+    return res.status(400).json({ error: "Book title is required" });
+  }
 
-app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+  try {
+    console.log("Fetching data for book title:", title);
+
+    // Trim and encode the title
+    const trimmedTitle = title.trim();
+    const encodedTitle = encodeURIComponent(trimmedTitle);
+
+    // Prepare the database query
+    const dbQueryPromise = pool
+      .request()
+      .input("title", sql.NVarChar, trimmedTitle)
+      .query("SELECT author, price, publisher FROM Books WHERE LOWER(name) = LOWER(@title)");
+
+    // Prepare the API request
+    const apiRequestPromise = axios.get(`https://openlibrary.org/search.json?q=${encodedTitle}`);
+
+    // Execute both promises concurrently
+    const [dbResult, apiResponse] = await Promise.all([dbQueryPromise, apiRequestPromise]);
+
+    // Handle database response
+    if (dbResult.recordset.length === 0) {
+      return res.status(404).json({ error: "No matching book found in the database" });
+    }
+    const bookData = dbResult.recordset[0];
+
+    // Handle API response
+    const docs = apiResponse.data.docs;
+    if (!docs || docs.length === 0) {
+      return res.status(404).json({ error: "No books found in the Open Library API" });
+    }
+    const firstPublishedYear = docs[0].first_publish_year;
+
+    if (!firstPublishedYear) {
+      return res.status(404).json({ error: "First published year not available" });
+    }
+
+    // Combine database and API data into a single response
+    const combinedData = {
+      title: trimmedTitle,
+      ...bookData,
+      firstPublishedYear,
+    };
+
+    // Send the combined response
+    res.status(200).json(combinedData);
+  } catch (error) {
+    console.error("Error occurred while processing the request:", error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
+
+// Start the server
+app.listen(port, () => {
+  console.log(`Server is running on http://localhost:${port}`);
+});
